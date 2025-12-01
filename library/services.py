@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from sqlalchemy import or_, not_, and_
 from .models import Author, Book, Student, Borrow
 from .db import get_db
@@ -147,6 +147,7 @@ def delete_student(student_id: int) -> bool:
             session.commit()
             
 # Borrow/Return Logic
+
 def borrow_book(student_id: int, book_id: int) -> Borrow | None:
     """
     Talabaga kitob berish
@@ -164,6 +165,119 @@ def borrow_book(student_id: int, book_id: int) -> Borrow | None:
     Returns:
         Borrow object yoki None (xatolik bo'lsa)
     """
-    pass
+    with get_db() as session:
+        student = session.get(Student, student_id)
+        book = session.get(Book, book_id)
 
+        if not student:
+            return None
+        if not book:
+            return None
+        if book.is_available == False:
+            return None
+
+        # Talabada 3 tadan ortiq qaytarilmagan kitob yo`qmi shuni tekshirish uchun mana bunday logika qildim
+        # buning logikasi shunday: avval borrowdagi student idsini olvolamiz va u oldin kirtob qaytargan yoki
+        # qaytarmaganini bilish uchun 
+        active_borrows = session.query(Borrow).filter(
+            Borrow.student_id == student_id,
+            Borrow.returned_at == None
+        ).count()
+        if active_borrows >= 3:
+            return None
+
+        borrowed_at = datetime.now()
+
+        # datetime kutubxonasida timedelta degan method bor ekan, shu metoddan foydalanib qildim, yani aynan qaysiga kun, soat, yil qushmoqchi bulsak
+        #shuni yozib vaqt kiritamiz masalan timedelta(hours=3)
+        due_date = borrowed_at + timedelta(days=14)
+
+
+        borrow = Borrow(
+            student_id=student_id,
+            book_id=book_id,
+            borrowed_at=borrowed_at,
+            due_date=due_date,
+            returned_at=None
+        )
+
+        book.is_available = True  # kitobni band qilish
+        book.is_available = False
+        session.add(borrow)
+        session.commit()
+        
+def return_book(borrow_id: int) -> bool:
+
+    """
+    Kitobni qaytarish
+    
+    Transaction ichida:
+    - Borrow.returned_at ni to'ldirish
+    - Book.is_available = True qilish
+    
+    Returns:
+        True (muvaffaqiyatli) yoki False (xatolik)
+    """
+    with get_db() as session:
+        borrow = session.get(Borrow, borrow_id)
+        if not borrow:
+            return False
+        if borrow.returned_at != None:
+            return False
+
+        borrow.returned_at = datetime.now()
+
+        book = session.get(Book, borrow.book_id)
+        if book != None:
+            book.is_available = True
+
+        session.commit()
+        
+def get_student_borrow_count(student_id: int) -> int:
+    """Talabaning jami olgan kitoblari soni"""
+    with get_db() as session:
+        count = session.query(Borrow).filter(Borrow.student_id == student_id).count()
+        return count 
+    
+    
+def get_currently_borrowed_books() -> list[tuple[Book, Student, datetime]]:
+    """Hozirda band bo'lgan kitoblar va ularni olgan talabalar"""
+    with get_db() as session:
+        borrows = session.query(Borrow).filter(Borrow.returned_at == None).all()
+        result = []
+        for borrow in borrows:
+            student = session.get(Student, borrow.student_id)
+            book = session.get(Book, borrow.book_id)
+            result.append((book, student, borrow.borrowed_at))
+        return result 
+
+def get_books_by_author(author_id: int) -> list[Book]:
+    """Muayyan muallifning barcha kitoblari"""
+    with get_db() as session:
+        books = session.query(Book).filter(Book.author_id == author_id).all()
+    return books
+
+def get_overdue_borrows() -> list[tuple[Borrow, Student, Book, int]]:
+    """
+    Kechikkan kitoblar ro'yxati
+    
+    Returns:
+        List of tuples: (Borrow, Student, Book, kechikkan_kunlar)
+        faqat returned_at=NULL va due_date o'tgan yozuvlar
+    """
+    with get_db() as session:
+        now = datetime.now()
+        borrows = session.query(Borrow).filter(
+            Borrow.returned_at == None,
+            Borrow.due_date < now
+        ).all()
+        
+        result = []
+        for borrow in borrows:
+            student = session.get(Student, borrow.student_id)
+            book = session.get(Book, borrow.book_id)
+            days_late = (now - borrow.due_date).days
+            result.append((borrow, student, book, days_late))
+        
+        return result
             
